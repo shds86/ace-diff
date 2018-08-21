@@ -11,7 +11,9 @@ import query from './dom/query';
 
 const requireFunc = (ace.acequire || ace.require);
 
-const { Range } = requireFunc('ace/range');
+const {
+  Range
+} = requireFunc('ace/range');
 
 const C = {
   DIFF_EQUAL: 0,
@@ -36,7 +38,11 @@ function AceDiff(options) {
     lockScrolling: false, // not implemented yet
     showDiffs: true,
     showConnectors: true,
+    useResult: false,
     maxDiffs: 5000,
+    dmpOptions: {
+      diff_method: "diff_cleanupSemantic"
+    },
     left: {
       id: null,
       content: null,
@@ -53,6 +59,13 @@ function AceDiff(options) {
       editable: true,
       copyLinkEnabled: true,
     },
+    result: {
+      id: null,
+      content: null,
+      mode: null,
+      theme: null,
+      editable: false,
+    },
     classes: {
       gutterID: 'acediff__gutter',
       diff: 'acediff__diffLine',
@@ -63,6 +76,7 @@ function AceDiff(options) {
       deletedCodeConnectorLinkContent: '&#8592;',
       copyRightContainer: 'acediff__copy--right',
       copyLeftContainer: 'acediff__copy--left',
+      diffresult: 'acediff__result'
     },
     connectorYOffset: 0,
   }, options);
@@ -87,6 +101,18 @@ function AceDiff(options) {
   this.options.classes.gutterID = ensureElement(this.el, 'acediff__gutter');
   this.options.right.id = ensureElement(this.el, 'acediff__right');
 
+  if (this.options.useResult) {
+    this.options.result.id = ensureElement(this.el, 'acediff__result');
+    this.result = {
+      ace: ace.edit(this.options.result.id),
+      markers: [],
+      lineLengths: []
+    };
+    this.el.querySelector('.acediff__left').classList.add('used__result');
+    // this.el.querySelector('.acediff__gutter');
+    this.el.querySelector('.acediff__right').classList.add('used__result');
+  }
+
   this.el.innerHTML = `<div class="acediff__wrap">${this.el.innerHTML}</div>`;
 
   // instantiate the editors in an internal data structure
@@ -106,8 +132,6 @@ function AceDiff(options) {
     editorHeight: null,
   };
 
-
-
   // set up the editors
   this.editors.left.ace.getSession().setMode(getMode(this, C.EDITOR_LEFT));
   this.editors.right.ace.getSession().setMode(getMode(this, C.EDITOR_RIGHT));
@@ -118,6 +142,18 @@ function AceDiff(options) {
 
   this.editors.left.ace.setValue(normalizeContent(this.options.left.content), -1);
   this.editors.right.ace.setValue(normalizeContent(this.options.right.content), -1);
+
+  if (this.options.useResult) {
+    this.result = {
+      ace: ace.edit(this.options.result.id),
+      markers: [],
+      lineLengths: []
+    };
+    this.result.ace.getSession().setMode(getMode(this, C.EDITOR_RIGHT));
+    this.result.ace.setReadOnly(!this.result.editable);
+    this.result.ace.setTheme(getTheme(this, C.EDITOR_LEFT));
+    this.result.ace.setValue(normalizeContent(this.options.right.content), -1);
+  }
 
   // store the visible height of the editors (assumed the same)
   this.editors.editorHeight = getEditorHeight(this);
@@ -157,14 +193,25 @@ AceDiff.prototype = {
     };
   },
 
+  getResult() {
+
+  },
+
+
   // our main diffing function. I actually don't think this needs to exposed: it's called automatically,
   // but just to be safe, it's included
   diff() {
+    if (this.options.useResult && !this.result.hasInserted) {
+      this.result.hasInserted = true;
+      this.result.ace.getSession().setValue(this.editors.right.ace.getSession().getValue());
+    }
+
     const dmp = new DiffMatchPatch();
     const val1 = this.editors.left.ace.getSession().getValue();
     const val2 = this.editors.right.ace.getSession().getValue();
     const diff = dmp.diff_main(val2, val1);
-    dmp.diff_cleanupSemantic(diff);
+    dmp.Diff_EditCost = 10;
+    dmp[this.options.dmpOptions.diff_method](diff);
 
     this.editors.left.lineLengths = getLineLengths(this.editors.left);
     this.editors.right.lineLengths = getLineLengths(this.editors.right);
@@ -263,12 +310,21 @@ function getTheme(acediff, editor) {
 let removeEventHandlers = () => {};
 
 function addEventHandlers(acediff) {
-  acediff.editors.left.ace.getSession().on('changeScrollTop', throttle((scroll) => { updateGap(acediff, 'left', scroll); }, 16));
-  acediff.editors.right.ace.getSession().on('changeScrollTop', throttle((scroll) => { updateGap(acediff, 'right', scroll); }, 16));
+  acediff.editors.left.ace.getSession().on('changeScrollTop', throttle((scroll) => {
+    updateGap(acediff, 'left', scroll);
+  }, 16));
+  acediff.editors.right.ace.getSession().on('changeScrollTop', throttle((scroll) => {
+    updateGap(acediff, 'right', scroll);
+  }, 16));
 
   const diff = acediff.diff.bind(acediff);
   acediff.editors.left.ace.on('change', diff);
   acediff.editors.right.ace.on('change', diff);
+  if (acediff.options.useResult) {
+    acediff.editors.right.ace.on('change', function () {
+      acediff.result.ace.getSession().setValue(acediff.editors.right.ace.getSession().getValue());
+    });
+  }
 
   if (acediff.options.left.copyLinkEnabled) {
     query.on(`#${acediff.options.classes.gutterID}`, 'click', `.${acediff.options.classes.newCodeConnectorLink}`, (e) => {
@@ -319,6 +375,10 @@ function copy(acediff, e, dir) {
     endLine = diff.rightEndLine;
     targetStartLine = diff.leftStartLine;
     targetEndLine = diff.leftEndLine;
+  }
+
+  if (acediff.options.useResult) {
+    targetEditor = acediff.result;
   }
 
   let contentToInsert = '';
@@ -750,9 +810,9 @@ function clearArrows(acediff) {
 
 
 /*
-  * This combines multiple rows where, say, line 1 => line 1, line 2 => line 2, line 3-4 => line 3. That could be
-  * reduced to a single connector line 1=4 => line 1-3
-  */
+ * This combines multiple rows where, say, line 1 => line 1, line 2 => line 2, line 3-4 => line 3. That could be
+ * reduced to a single connector line 1=4 => line 1-3
+ */
 function simplifyDiffs(acediff, diffs) {
   const groupedDiffs = [];
 
@@ -771,7 +831,7 @@ function simplifyDiffs(acediff, diffs) {
     let isGrouped = false;
     for (let i = 0; i < groupedDiffs.length; i++) {
       if (compare(Math.abs(diff.leftStartLine - groupedDiffs[i].leftEndLine)) &&
-          compare(Math.abs(diff.rightStartLine - groupedDiffs[i].rightEndLine))) {
+        compare(Math.abs(diff.rightStartLine - groupedDiffs[i].rightEndLine))) {
         // update the existing grouped diff to expand its horizons to include this new diff start + end lines
         groupedDiffs[i].leftStartLine = Math.min(diff.leftStartLine, groupedDiffs[i].leftStartLine);
         groupedDiffs[i].rightStartLine = Math.min(diff.rightStartLine, groupedDiffs[i].rightStartLine);
