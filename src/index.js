@@ -11,9 +11,7 @@ import query from './dom/query';
 
 const requireFunc = (ace.acequire || ace.require);
 
-const {
-  Range
-} = requireFunc('ace/range');
+const {Range} = requireFunc('ace/range');
 
 const C = {
   DIFF_EQUAL: 0,
@@ -194,7 +192,9 @@ AceDiff.prototype = {
   },
 
   getResult() {
-
+    if (this.options.useResult)
+      return this.result.ace;
+    return null;
   },
 
 
